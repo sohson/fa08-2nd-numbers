@@ -99,9 +99,3 @@ python pipeline.py --period 2026_H2
 - `filter_flag`
 - `stock_meta` 업데이트분
 - `macro.csv` 업데이트분
-
-## 수동 SQL 운영
-
-수동 SQL 반영 기준과 최신 반기 점검 절차는 [MANUAL_UPDATE_GUIDE.md](/C:/Users/Admin/Documents/Playground/numbers_staging/MANUAL_UPDATE_GUIDE.md)에 정리했습니다.
-
-주간 실행용 진입 스크립트는 [weekly_run.ps1](/C:/Users/Admin/Documents/Playground/numbers_staging/weekly_run.ps1)입니다.
