@@ -170,7 +170,7 @@ def run_prediction(
     if period in period_order:
         index = period_order.index(period)
         prev_period = period_order[index - 1] if index > 0 else None
-        prev_members = set(package.get("actual_members", {}).get(prev_period, [])) if prev_period else set()
+        prev_members = set(package.get("actual_members", {}).get(prev_period, [])) if prev_period else None
     else:
         prev_members = None
 
