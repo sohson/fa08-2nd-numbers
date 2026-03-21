@@ -1,0 +1,47 @@
+.env
+.env.*
+!.env.example
+
+.venv/
+.venv_broken_20260320/
+venv/
+env/
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+.streamlit/secrets.toml
+
+logs/
+*.log
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+tmp/
+temp/
+out/
+*.tmp
+
+data/subscriptions/subscribers.csv
+
+data/incoming/auto/*.csv
+data/incoming/auto/*.json
+data/incoming/auto/*.xlsx
+
+data/incoming/manual/actual_kospi200_2026.csv
+
+data/raw/kospi_db_full_20260320.sql
+
+# Keep these tracked only if you explicitly want runnable data in the repo
+# data/raw/model_package.pkl
+# data/raw/macro.csv
+# data/raw/historical_predictions/
