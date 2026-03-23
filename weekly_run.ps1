@@ -58,6 +58,13 @@ function Sync-ToLiveApp {
         New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
     }
 
+    $ResolvedSourceDir = (Resolve-Path $SourceDir).Path
+    $ResolvedTargetDir = (Resolve-Path $TargetDir).Path
+    if ($ResolvedSourceDir -eq $ResolvedTargetDir) {
+        Write-RunLog "Source and target auto directories are identical, skipping live sync."
+        return
+    }
+
     $patterns = @(
         "weekly_predictions_*.csv",
         "weekly_strong_in_*.csv",
@@ -75,7 +82,10 @@ function Sync-ToLiveApp {
 
     foreach ($pattern in $patterns) {
         Get-ChildItem -Path $SourceDir -Filter $pattern -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item -Path $_.FullName -Destination (Join-Path $TargetDir $_.Name) -Force
+            $DestinationPath = Join-Path $TargetDir $_.Name
+            if ((Resolve-Path $_.FullName).Path -ne $DestinationPath) {
+                Copy-Item -Path $_.FullName -Destination $DestinationPath -Force
+            }
         }
     }
 

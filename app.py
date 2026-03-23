@@ -1,8 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import date, timedelta
+from io import StringIO
 from typing import Any
 from collections import Counter
 from email.utils import parsedate_to_datetime
@@ -37,6 +39,17 @@ def normalize_ticker(value: Any) -> Any:
     return text.zfill(6)
 
 
+@st.cache_data(show_spinner=False)
+def encode_image_to_data_uri(image_path: str) -> str:
+    path = Path(image_path)
+    if not path.exists():
+        return ""
+    suffix = path.suffix.lower()
+    mime = "image/png" if suffix == ".png" else "image/jpeg"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
 def normalize_ticker_columns(frame: pd.DataFrame) -> pd.DataFrame:
     normalized = frame.copy()
     for column in ["ticker"]:
@@ -59,9 +72,9 @@ def validate_email(email: str) -> bool:
 def save_subscriber_email(email: str) -> tuple[bool, str]:
     normalized_email = email.strip().lower()
     if not normalized_email:
-        return False, "이메일을 입력해 주세요."
+        return False, "?대찓?쇱쓣 ?낅젰??二쇱꽭??"
     if not validate_email(normalized_email):
-        return False, "올바른 이메일 형식이 아닙니다."
+        return False, "?щ컮瑜??대찓???뺤떇???꾨떃?덈떎."
 
     csv_path = get_subscriber_csv_path()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,21 +85,21 @@ def save_subscriber_email(email: str) -> tuple[bool, str]:
         existing = pd.DataFrame(columns=["email", "subscribed_at"])
 
     if "email" in existing.columns and normalized_email in existing["email"].astype(str).str.lower().tolist():
-        return True, "이미 구독 신청된 이메일입니다."
+        return True, "?대? 援щ룆 ?좎껌???대찓?쇱엯?덈떎."
 
     new_row = pd.DataFrame(
         [{"email": normalized_email, "subscribed_at": pd.Timestamp.now(tz="Asia/Seoul").isoformat()}]
     )
     updated = pd.concat([existing, new_row], ignore_index=True)
     updated.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    return True, f"구독 이메일이 저장되었습니다. 저장 파일: {csv_path.name}"
+    return True, f"援щ룆 ?대찓?쇱씠 ??λ릺?덉뒿?덈떎. ????뚯씪: {csv_path.name}"
 
 
 def to_number_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series.astype(str).str.replace(",", "", regex=False), errors="coerce")
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=30)
 def fetch_krx_json(url: str, api_key: str, bas_dd: str) -> dict[str, Any] | None:
     try:
         response = requests.get(
@@ -101,7 +114,7 @@ def fetch_krx_json(url: str, api_key: str, bas_dd: str) -> dict[str, Any] | None
         return None
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=30)
 def fetch_latest_kospi_market_snapshot(api_key: str | None) -> tuple[pd.DataFrame, str | None]:
     if not api_key:
         return pd.DataFrame(), None
@@ -140,7 +153,7 @@ def fetch_latest_kospi_market_snapshot(api_key: str | None) -> tuple[pd.DataFram
     return pd.DataFrame(), None
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=30)
 def fetch_latest_kospi_index(api_key: str | None) -> tuple[dict[str, Any] | None, pd.DataFrame]:
     if not api_key:
         return None, pd.DataFrame()
@@ -166,7 +179,9 @@ def fetch_latest_kospi_index(api_key: str | None) -> tuple[dict[str, Any] | None
         if not exact.empty:
             target = exact
         else:
-            target = target.loc[~target["IDX_NM"].astype(str).str.contains("200|중형|소형|대형|은행|금융|의료|운송", na=False)].copy()
+            target = target.loc[
+                ~target["IDX_NM"].astype(str).str.contains("200|중형|소형|대형|금융|헬스|운송", na=False)
+            ].copy()
             if target.empty:
                 target = frame.loc[frame["IDX_NM"].astype(str).str.contains("코스피", na=False)].head(1).copy()
         row = target.iloc[0].to_dict()
@@ -197,7 +212,7 @@ def fetch_latest_kospi_index(api_key: str | None) -> tuple[dict[str, Any] | None
     return latest, history
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=30)
 def fetch_yahoo_kospi_index() -> tuple[dict[str, Any] | None, pd.DataFrame]:
     url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11"
     try:
@@ -283,7 +298,115 @@ def fetch_yahoo_stock_history(ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+def _flatten_columns(columns: Any) -> list[str]:
+    flattened: list[str] = []
+    for column in columns:
+        if isinstance(column, tuple):
+            parts = [str(part).strip() for part in column if str(part).strip() and str(part).lower() != "nan"]
+            flattened.append(" ".join(parts).strip())
+        else:
+            flattened.append(str(column).strip())
+    return flattened
+
+
+@st.cache_data(show_spinner=False, ttl=120)
+def fetch_naver_market_sum_snapshot() -> tuple[pd.DataFrame, str | None]:
+    page_frames: list[pd.DataFrame] = []
+    fetched_at = pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M")
+
+    for page in range(1, 5):
+        try:
+            response = requests.get(
+                "https://finance.naver.com/sise/sise_market_sum.naver",
+                params={"sosok": "0", "page": page},
+                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            html_text = response.text
+            tables = pd.read_html(StringIO(html_text))
+        except Exception:
+            continue
+
+        quote_table = None
+        for table in tables:
+            table.columns = _flatten_columns(table.columns)
+            column_text = " ".join(table.columns)
+            if "종목명" in column_text and "현재가" in column_text and "등락률" in column_text:
+                quote_table = table
+                break
+        if quote_table is None:
+            continue
+
+        ticker_pairs = re.findall(
+            r'href="/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>',
+            html_text,
+            flags=re.I,
+        )
+        if not ticker_pairs:
+            continue
+
+        company_col = next((col for col in quote_table.columns if "종목명" in col), None)
+        price_col = next((col for col in quote_table.columns if "현재가" in col), None)
+        rate_col = next((col for col in quote_table.columns if "등락률" in col), None)
+        if not company_col or not price_col or not rate_col:
+            continue
+
+        frame = quote_table[[company_col, price_col, rate_col]].copy()
+        frame = frame.rename(columns={company_col: "company", price_col: "close", rate_col: "change_rate"})
+        frame["company"] = frame["company"].astype(str).str.strip()
+        frame = frame.loc[
+            frame["company"].ne("")
+            & frame["company"].ne("N")
+            & frame["company"].ne("종목명")
+            & ~frame["company"].str.contains("선택", na=False)
+        ].copy()
+
+        ticker_map = {name.strip(): code for code, name in ticker_pairs}
+        frame["ticker"] = frame["company"].map(ticker_map)
+        frame = frame.dropna(subset=["ticker"]).copy()
+        frame["ticker"] = frame["ticker"].astype(str).apply(normalize_ticker)
+        frame["close"] = to_number_series(frame["close"])
+        frame["change_rate"] = pd.to_numeric(
+            frame["change_rate"].astype(str).str.replace("%", "", regex=False).str.replace("+", "", regex=False),
+            errors="coerce",
+        )
+        page_frames.append(frame[["ticker", "company", "close", "change_rate"]])
+
+    if not page_frames:
+        return pd.DataFrame(), None
+
+    snapshot = pd.concat(page_frames, ignore_index=True)
+    snapshot = snapshot.drop_duplicates(subset=["ticker"], keep="first").reset_index(drop=True)
+    return snapshot, fetched_at
+
+
+def get_future_prediction_basis_text(config: AppConfig) -> str:
+    summary_path = config.auto_output_dir / "weekly_collection_summary.json"
+    if summary_path.exists():
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            yahoo_run_at = ((payload or {}).get("yahoo") or {}).get("run_at")
+            if yahoo_run_at:
+                return str(yahoo_run_at)
+        except Exception:
+            pass
+
+    yahoo_daily_path = config.auto_output_dir / "yahoo_price_daily.csv"
+    if yahoo_daily_path.exists():
+        try:
+            frame = pd.read_csv(yahoo_daily_path)
+            if "date" in frame.columns and not frame["date"].dropna().empty:
+                latest_date = pd.to_datetime(frame["date"], errors="coerce").dropna().max()
+                if pd.notna(latest_date):
+                    return latest_date.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    return "확인 불가"
+
+
+@st.cache_data(show_spinner=False, ttl=180)
 def fetch_live_kospi_market_snapshot(auto_output_dir: str) -> tuple[pd.DataFrame, str | None]:
     auto_dir = Path(auto_output_dir)
     meta_path = auto_dir / "naver_stock_meta_weekly.csv"
@@ -304,7 +427,7 @@ def fetch_live_kospi_market_snapshot(auto_output_dir: str) -> tuple[pd.DataFrame
         meta = meta.loc[
             market_text.str.contains("KOSPI", case=False, na=False)
             | market_text.str.contains("코스피", na=False)
-            | market_text.str.contains("肄붿뒪", na=False)
+            | market_text.str.contains("유가증권", na=False)
         ].copy()
     if meta.empty:
         return pd.DataFrame(), None
@@ -314,43 +437,17 @@ def fetch_live_kospi_market_snapshot(auto_output_dir: str) -> tuple[pd.DataFrame
     if meta.empty:
         return pd.DataFrame(), None
 
-    symbols = [get_yahoo_symbol(ticker) for ticker in meta["ticker"].tolist()]
-    quote_rows: list[dict[str, Any]] = []
-
-    for start in range(0, len(symbols), 50):
-        batch = symbols[start:start + 50]
-        try:
-            response = requests.get(
-                "https://query1.finance.yahoo.com/v7/finance/quote",
-                params={"symbols": ",".join(batch)},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=10,
-            )
-            response.raise_for_status()
-            results = response.json().get("quoteResponse", {}).get("result", [])
-        except Exception:
-            results = []
-
-        for item in results:
-            raw_symbol = str(item.get("symbol", ""))
-            ticker = raw_symbol.split(".")[0].zfill(6) if raw_symbol else None
-            if not ticker:
-                continue
-            quote_rows.append(
-                {
-                    "ticker": ticker,
-                    "close": pd.to_numeric(item.get("regularMarketPrice"), errors="coerce"),
-                    "change_rate": pd.to_numeric(item.get("regularMarketChangePercent"), errors="coerce"),
-                    "change": pd.to_numeric(item.get("regularMarketChange"), errors="coerce"),
-                    "quote_time": item.get("regularMarketTime"),
-                }
-            )
-
-    quote_df = pd.DataFrame(quote_rows)
+    quote_df, quote_basis = fetch_naver_market_sum_snapshot()
     if quote_df.empty:
         return pd.DataFrame(), None
 
-    frame = meta.merge(quote_df, on="ticker", how="left")
+    frame = meta.merge(quote_df, on="ticker", how="left", suffixes=("_meta", ""))
+    if "company" not in frame.columns:
+        if "company_meta" in frame.columns:
+            frame["company"] = frame["company_meta"]
+    elif "company_meta" in frame.columns:
+        blank_company = frame["company"].fillna("").astype(str).str.strip().eq("")
+        frame.loc[blank_company, "company"] = frame.loc[blank_company, "company_meta"]
     frame["current_price"] = pd.to_numeric(frame.get("current_price"), errors="coerce")
     frame["close"] = pd.to_numeric(frame.get("close"), errors="coerce").fillna(frame["current_price"])
     frame = frame.dropna(subset=["close", "shares_outstanding"]).copy()
@@ -360,10 +457,7 @@ def fetch_live_kospi_market_snapshot(auto_output_dir: str) -> tuple[pd.DataFrame
     frame["mktcap"] = frame["close"] * frame["shares_outstanding"]
     frame["rank"] = frame["mktcap"].rank(ascending=False, method="first").astype(int)
     frame = frame.sort_values("rank").reset_index(drop=True)
-
-    latest_ts = pd.to_datetime(frame["quote_time"], unit="s", errors="coerce").dropna()
-    latest_date = latest_ts.max().strftime("%Y-%m-%d") if not latest_ts.empty else None
-    return frame, latest_date
+    return frame, quote_basis
 
 
 def strip_html_tags(text: str) -> str:
@@ -373,7 +467,7 @@ def strip_html_tags(text: str) -> str:
 
 
 def normalize_news_tokens(text: str) -> list[str]:
-    return re.findall(r"[A-Za-z0-9?-?]{2,}", (text or "").lower())
+    return re.findall(r"[가-힣A-Za-z0-9]{2,}", (text or "").lower())
 
 
 def dedupe_news_items(items: list[dict[str, Any]], company: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -441,9 +535,9 @@ def score_news_item(item: dict[str, Any], company: str, ticker: str, sector: str
 
 def extract_news_keywords(items: list[dict[str, Any]], company: str, ticker: str, limit: int = 5) -> list[str]:
     stopwords = {
-        "??", "??", "??", "??", "???", "???", "??", "??", "??", "??",
-        "??", "??", "??", "??", "??", "??", "??", "??", "??", "??",
-        "??", "??", "??", "??", "??", "??", "??", "??",
+        "증시", "시장", "주가", "종목", "코스피", "코스닥", "관련", "뉴스", "기사", "오늘",
+        "오전", "오후", "기자", "단독", "속보", "전망", "실적", "발표", "공시", "기준",
+        "분석", "투자", "상승", "하락", "매수", "매도", "업종", "섹터",
     }
     company_tokens = set(normalize_news_tokens(company)) | {normalize_ticker(ticker).lower()}
     counter: Counter[str] = Counter()
@@ -543,7 +637,7 @@ FEATURE_LABEL_MAP = {
     "treasury_ratio": "자사주 비율",
     "sector_relative_rank": "섹터 내 상대 순위",
     "prev_rank": "전기 순위",
-    "major_holder_ratio": "대주주 지분율",
+    "major_holder_ratio": "주요주주 지분율",
     "sector_rank": "업종 내 순위",
     "foreign_change": "외국인 지분 변화",
     "turnover_ratio": "거래 회전율",
@@ -693,8 +787,8 @@ def build_dynamic_feature_krx(bundle: DataBundle, period: str) -> pd.DataFrame:
     grouped["turnover_ratio"] = grouped["avg_trading_value"] / grouped["avg_mktcap"].replace(0, pd.NA)
     grouped["turnover_ratio"] = grouped["turnover_ratio"].fillna(0.0)
     grouped["float_ratio"] = grouped["float_ratio"].fillna(1.0)
-    grouped["gics_sector"] = grouped["gics_sector"].fillna("기타")
-    grouped["krx_group"] = grouped["krx_group"].fillna("기타")
+    grouped["gics_sector"] = grouped["gics_sector"].fillna("湲고?")
+    grouped["krx_group"] = grouped["krx_group"].fillna("湲고?")
 
     result = grouped[["period", "ticker", "avg_mktcap", "float_ratio", "gics_sector", "krx_group", "period_rank", "turnover_ratio"]].copy()
     result = result.sort_values("period_rank").head(300).reset_index(drop=True)
@@ -1101,6 +1195,64 @@ def get_actual_members(package: dict[str, Any], current_period: str) -> set[str]
     return set(package.get("actual_members", {}).get(current_period, []))
 
 
+def build_actual_change_result(
+    bundle: DataBundle,
+    context: PeriodContext,
+    period: str,
+    prediction_result: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    labels = bundle.labels.loc[bundle.labels["period"] == period].copy()
+    if labels.empty:
+        return None
+
+    labels = normalize_ticker_columns(labels)
+    labels["ticker"] = labels["ticker"].astype(str).apply(normalize_ticker)
+    labels["label_in"] = pd.to_numeric(labels.get("label_in"), errors="coerce").fillna(0).astype(int)
+    labels["label_out"] = pd.to_numeric(labels.get("label_out"), errors="coerce").fillna(0).astype(int)
+    labels["actual_rank"] = pd.to_numeric(labels.get("actual_rank"), errors="coerce")
+
+    snapshot = context.frame.copy()
+    lookup_columns = [column for column in ["ticker", "company", "gics_sector", "krx_group"] if column in snapshot.columns]
+    if lookup_columns:
+        snapshot = snapshot[lookup_columns].drop_duplicates(subset=["ticker"], keep="last")
+        labels = labels.merge(snapshot, on="ticker", how="left")
+
+    labels["company"] = labels.get("company", labels["ticker"])
+    labels["company"] = labels["company"].fillna(labels["ticker"].astype(str).map(context.ticker_to_name))
+    labels["company"] = labels["company"].fillna(labels["ticker"])
+    blank_company = labels["company"].astype(str).str.strip().eq("")
+    if blank_company.any():
+        labels.loc[blank_company, "company"] = (
+            labels.loc[blank_company, "ticker"].astype(str).map(context.ticker_to_name)
+        )
+    company_is_ticker = labels["company"].astype(str).str.strip().eq(labels["ticker"].astype(str).str.strip())
+    if company_is_ticker.any():
+        labels.loc[company_is_ticker, "company"] = (
+            labels.loc[company_is_ticker, "ticker"].astype(str).map(context.ticker_to_name)
+        )
+    blank_company = labels["company"].astype(str).str.strip().eq("")
+    if blank_company.any():
+        labels.loc[blank_company, "company"] = labels.loc[blank_company, "ticker"]
+
+    actual_in = (
+        labels.loc[labels["label_in"] == 1]
+        .sort_values(["actual_rank", "ticker"], ascending=[True, True], na_position="last")
+        .copy()
+    )
+    actual_out = (
+        labels.loc[labels["label_out"] == 1]
+        .sort_values(["actual_rank", "ticker"], ascending=[True, True], na_position="last")
+        .copy()
+    )
+
+    return {
+        "actual_in": actual_in,
+        "actual_out": actual_out,
+        "actual_in_set": set(actual_in["ticker"].astype(str)),
+        "actual_out_set": set(actual_out["ticker"].astype(str)),
+    }
+
+
 def get_stored_prediction_result(
     bundle: DataBundle,
     context: PeriodContext,
@@ -1161,8 +1313,8 @@ def get_stored_prediction_result(
     merged = merged.sort_values(["pred_rank", "period_rank"], ascending=[True, True]).reset_index(drop=True)
 
     top200 = set(merged.loc[merged["pred_top200"] == 1, "ticker"].astype(str))
-    strong_in = merged.loc[merged["strong_in"] == 1].sort_values("pred_rank").copy()
-    strong_out = merged.loc[merged["strong_out"] == 1].sort_values("pred_rank").copy()
+    strong_in = merged.loc[merged["strong_in"] == 1].sort_values(["score", "pred_rank"], ascending=[False, True]).copy()
+    strong_out = merged.loc[merged["strong_out"] == 1].sort_values(["score", "pred_rank"], ascending=[True, True]).copy()
 
     return {
         "period": period,
@@ -1220,8 +1372,8 @@ def get_generated_prediction_result(
 
     scored = scored.sort_values(["pred_rank", "period_rank"], ascending=[True, True]).reset_index(drop=True)
     top200 = set(scored.loc[scored["pred_top200"] == 1, "ticker"].astype(str))
-    strong_in = scored.loc[scored["strong_in"] == 1].sort_values("pred_rank").copy()
-    strong_out = scored.loc[scored["strong_out"] == 1].sort_values("pred_rank").copy()
+    strong_in = scored.loc[scored["strong_in"] == 1].sort_values(["score", "pred_rank"], ascending=[False, True]).copy()
+    strong_out = scored.loc[scored["strong_out"] == 1].sort_values(["score", "pred_rank"], ascending=[True, True]).copy()
 
     file_mtime = pd.Timestamp(scored_path.stat().st_mtime, unit="s").tz_localize("UTC").tz_convert("Asia/Seoul")
     return {
@@ -1243,8 +1395,19 @@ def get_generated_prediction_result(
     }
 
 
-def make_csv(prediction_result: dict[str, Any]) -> bytes:
+def make_csv(prediction_result: dict[str, Any], bundle: DataBundle | None = None, period: str | None = None) -> bytes:
     frame = prediction_result["scored"].copy()
+    needs_actual_labels = "label_in" not in frame.columns or "label_out" not in frame.columns
+    if needs_actual_labels and bundle is not None and period is not None and not bundle.labels.empty:
+        labels = bundle.labels.loc[bundle.labels["period"].astype(str) == str(period)].copy()
+        if not labels.empty:
+            labels = normalize_ticker_columns(labels)
+            labels["ticker"] = labels["ticker"].astype(str).apply(normalize_ticker)
+            merge_columns = [column for column in ["ticker", "label_in", "label_out"] if column in labels.columns]
+            if "ticker" in merge_columns:
+                labels = labels[merge_columns].drop_duplicates(subset=["ticker"], keep="last")
+                frame["ticker"] = frame["ticker"].astype(str).apply(normalize_ticker)
+                frame = frame.merge(labels, on="ticker", how="left")
     export_columns = [
         "ticker",
         "company",
@@ -1257,6 +1420,8 @@ def make_csv(prediction_result: dict[str, Any]) -> bytes:
         "strong_in",
         "strong_out",
         "prev_was_member",
+        "label_in",
+        "label_out",
     ]
     frame = frame[[column for column in export_columns if column in frame.columns]]
     return frame.to_csv(index=False).encode("utf-8-sig")
@@ -1315,6 +1480,43 @@ def render_stock_section(frame: pd.DataFrame, card_type: str) -> None:
                     st.session_state["detail_ticker"] = ticker
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
+
+
+def build_actual_stock_card_html(row: pd.Series, card_type: str) -> str:
+    color = "#43d36f" if card_type == "in" else "#ff6767"
+    tag_label = "\uC2E4\uC81C \uD3B8\uC785" if card_type == "in" else "\uC2E4\uC81C \uD3B8\uCD9C"
+    sector = row.get("gics_sector")
+    if pd.isna(sector) or not str(sector).strip():
+        sector = row.get("krx_group")
+    if pd.isna(sector) or not str(sector).strip():
+        sector = "\uBBF8\uBD84\uB958"
+    actual_rank = row.get("actual_rank")
+    rank_text = f"\uC2E4\uC81C \uC21C\uC704 {int(actual_rank)}" if pd.notna(actual_rank) else "\uC2E4\uC81C \uC21C\uC704 \uC815\uBCF4 \uC5C6\uC74C"
+    company = row.get("company", "")
+    if pd.isna(company) or not str(company).strip():
+        company = row.get("ticker", "")
+    return f"""
+        <div class="stock-item">
+            <div class="stock-top">
+                <div>
+                    <div class="stock-name">{company}</div>
+                    <div class="stock-sub">{row['ticker']} \u00B7 {sector}</div>
+                </div>
+                <div class="stock-score-wrap">
+                    <div class="stock-score">
+                        <strong style="color:{color}; font-size:22px;">{rank_text}</strong>
+                        <span class="tag {'green' if card_type == 'in' else 'red'}">{tag_label}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    """
+
+
+def render_actual_stock_section(frame: pd.DataFrame, card_type: str) -> None:
+    with st.container(height=620):
+        for _, row in frame.iterrows():
+            st.markdown(build_actual_stock_card_html(row, card_type), unsafe_allow_html=True)
 
 
 def render_shap_section(selected_row: pd.Series, model_package: dict[str, Any]) -> None:
@@ -1425,11 +1627,118 @@ def render_price_section(bundle: DataBundle, selected_row: pd.Series) -> None:
             xaxis_title=None,
             yaxis_title=None,
             title=None,
+            showlegend=False,
+            hoverlabel=dict(bgcolor="#0f1b2d", font_color="#e8eef9"),
         )
         fig.update_xaxes(showgrid=True, gridcolor="rgba(156,179,207,0.16)")
         fig.update_yaxes(showgrid=True, gridcolor="rgba(156,179,207,0.16)")
+        fig.update_traces(
+            hovertemplate="\uB0A0\uC9DC %{x|%Y-%m-%d}<br>\uC885\uAC00 %{y:,.0f}\uC6D0<extra></extra>"
+        )
         st.plotly_chart(fig, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+@st.fragment(run_every="180s")
+def render_live_sidebar(config: AppConfig, latest_date: Any) -> None:
+    live_quote_df, live_quote_basis = fetch_naver_market_sum_snapshot()
+    if not live_quote_df.empty:
+        realtime_market = live_quote_df.copy().reset_index(drop=True)
+        realtime_market["rank"] = range(1, len(realtime_market) + 1)
+        realtime_market_date = live_quote_basis
+        market_source = "네이버"
+    else:
+        realtime_market, realtime_market_date = fetch_latest_kospi_market_snapshot(config.krxdata_api_key)
+        market_source = "저장 스냅샷"
+    latest_market_top = realtime_market.head(200).copy() if not realtime_market.empty else pd.DataFrame()
+    realtime_index, market_trend = fetch_yahoo_kospi_index()
+
+    index_value = realtime_index["value"] if realtime_index else None
+    index_change = realtime_index["change"] if realtime_index else None
+    index_change_rate = realtime_index["change_rate"] if realtime_index else None
+    index_basis = realtime_index["date"] if realtime_index else (
+        realtime_market_date or (str(latest_date) if latest_date is not None else "N/A")
+    )
+    market_update_text = (
+        f"업데이트 {realtime_market_date} · {market_source}"
+        if realtime_market_date
+        else f"업데이트 시각 없음 · {market_source}"
+    )
+    value_text = f"{index_value:,.2f}" if index_value is not None and pd.notna(index_value) else "N/A"
+    change_text = (
+        f"{index_change:+,.2f} ({index_change_rate:+.2f}%)"
+        if index_change is not None and pd.notna(index_change) and index_change_rate is not None and pd.notna(index_change_rate)
+        else f"기준일 {index_basis}"
+    )
+
+    st.markdown(
+        f"""
+        <div class="aside-card index-card">
+            <div class="side-stat-title">실시간 코스피 지수</div>
+            <div class="side-stat-value">{value_text}</div>
+            <div class="side-stat-change">{change_text}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not market_trend.empty:
+        market_trend["date"] = pd.to_datetime(market_trend["date"], errors="coerce")
+        trend_fig = px.area(market_trend, x="date", y="value")
+        trend_fig.update_traces(line_color="#43d36f", fillcolor="rgba(67,211,111,0.14)")
+        trend_fig.update_layout(
+            margin=dict(l=0, r=0, t=0, b=0),
+            height=220,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font_color="#dbe7f8",
+            xaxis_title=None,
+            yaxis_title=None,
+        )
+        trend_fig.update_xaxes(showgrid=False)
+        trend_fig.update_yaxes(showgrid=False, showticklabels=False)
+        st.plotly_chart(trend_fig, use_container_width=True)
+
+    st.markdown(
+        f"""
+        <div class="aside-card watch-card">
+            <div class="panel-head">
+                <div>
+                    <div class="section-title">시총 순위 200</div>
+                    <div class="section-sub">코스피 포함 종목 순위 · 시가총액 기준 상위 종목</div>
+                    <div class="section-sub">{market_update_text}</div>
+                </div>
+                <span class="tag blue">실시간</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if latest_market_top.empty:
+        st.info("실시간 시장 데이터가 없습니다.")
+    else:
+        with st.container(height=920):
+            for index, (_, row) in enumerate(latest_market_top.iterrows(), start=1):
+                change_rate = row.get("change_rate")
+                rate_text = f"{float(change_rate):+.2f}%" if pd.notna(change_rate) else "-"
+                delta_color = "#48da7b" if pd.notna(change_rate) and float(change_rate) >= 0 else "#ff6d78"
+                price_text = f"{float(row.get('close')):,.0f}원" if pd.notna(row.get("close")) else "가격 없음"
+                company = str(row.get("company", "") or "")
+                ticker = str(row.get("ticker", "") or "")
+                st.markdown(
+                    f"""
+                    <div class="rank-row">
+                        <div class="rank-num">{index}</div>
+                        <div>
+                            <div>{company}</div>
+                            <div class="rank-value">{ticker} · {price_text}</div>
+                        </div>
+                        <div class="rank-delta" style="color:{delta_color};">{rate_text}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
 @st.dialog("\uC885\uBAA9 \uC0C1\uC138", width="large")
@@ -1438,6 +1747,7 @@ def render_stock_modal(bundle: DataBundle, selected_row: pd.Series, model_packag
     ticker = str(selected_row.get("ticker", "") or "")
     sector = selected_row.get("gics_sector") or selected_row.get("krx_group") or "\uBBF8\uBD84\uB958"
     score_value = float(selected_row.get("score", 0))
+    modal_logo_uri = encode_image_to_data_uri(str(config.project_root / "assets" / "next200_logo_badge.png"))
 
     st.markdown(
         f"""
@@ -1456,6 +1766,11 @@ def render_stock_modal(bundle: DataBundle, selected_row: pd.Series, model_packag
         render_news_section(selected_row, config)
     with col2:
         render_price_section(bundle, selected_row)
+    if modal_logo_uri:
+        st.markdown(
+            f'<div class="modal-brand-corner"><img src="{modal_logo_uri}" alt="NEXT200 logo"></div>',
+            unsafe_allow_html=True,
+        )
 
 
 def apply_global_css() -> None:
@@ -1699,12 +2014,29 @@ def apply_global_css() -> None:
             height: 100%;
             border-radius: inherit;
         }
-        .panel-card, .aside-card {
-            padding: 18px 20px;
-        }
-        .panel {
-            padding: 20px;
-        }
+          .panel-card, .aside-card {
+              padding: 18px 20px;
+          }
+          .sidebar-brand {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              margin-bottom: 16px;
+              padding: 18px 20px;
+              border-radius: 22px;
+              border: 1px solid rgba(115,134,162,0.18);
+              background: linear-gradient(180deg, rgba(17, 28, 46, 0.98), rgba(11, 20, 34, 0.98));
+              box-shadow: 0 18px 44px rgba(0, 0, 0, 0.30);
+          }
+          .sidebar-brand img {
+              width: 100%;
+              max-width: 210px;
+              height: auto;
+              display: block;
+          }
+          .panel {
+              padding: 20px;
+          }
         .section-title {
             margin: 0;
             font-size: 15px;
@@ -1730,15 +2062,28 @@ def apply_global_css() -> None:
             font-size: 14px;
             margin-bottom: 8px;
         }
-        .analysis-item p {
-            margin: 0;
-            color: #91a7c4;
-            font-size: 12px;
-            line-height: 1.7;
-        }
-        .aside-card {
-            margin-bottom: 16px;
-        }
+          .analysis-item p {
+              margin: 0;
+              color: #91a7c4;
+              font-size: 12px;
+              line-height: 1.7;
+          }
+          .modal-brand-corner {
+              display: flex;
+              justify-content: flex-end;
+              margin-top: 14px;
+          }
+          .modal-brand-corner img {
+              width: 136px;
+              max-width: 34%;
+              height: auto;
+              border-radius: 18px;
+              box-shadow: 0 14px 28px rgba(0, 0, 0, 0.28);
+              opacity: 0.96;
+          }
+          .aside-card {
+              margin-bottom: 16px;
+          }
         .side-stat-title {
             color: #dbe7f8;
             font-size: 14px;
@@ -1962,16 +2307,17 @@ def main() -> None:
         return
 
     latest_available_period = available_periods[0]
-    realtime_market, realtime_market_date = fetch_live_kospi_market_snapshot(str(config.auto_output_dir))
-    if realtime_market.empty:
-        realtime_market, realtime_market_date = fetch_latest_kospi_market_snapshot(config.krxdata_api_key)
-    latest_market_top = realtime_market.head(200).copy() if not realtime_market.empty else pd.DataFrame()
-    realtime_index, market_trend = fetch_yahoo_kospi_index()
     latest_date = bundle.kospi_friday_daily["date"].max() if not bundle.kospi_friday_daily.empty else None
+    sidebar_logo_uri = encode_image_to_data_uri(str(config.project_root / "assets" / "next200_logo_light.png"))
 
     left_col, center_col, right_col = st.columns([1.05, 2.75, 1.25], gap="large")
 
     with left_col:
+        if sidebar_logo_uri:
+            st.markdown(
+                f'<div class="sidebar-brand"><img src="{sidebar_logo_uri}" alt="NEXT200 logo"></div>',
+                unsafe_allow_html=True,
+            )
         st.markdown(
             """
             <div class="panel-card">
@@ -2025,8 +2371,21 @@ def main() -> None:
             period_end_date=context.period_end,
         )
 
-    current_members = get_actual_members(model_package, selected_period)
-    prev_members = get_prev_members(model_package, selected_period)
+    labels_current_members = set()
+    labels_prev_members = set()
+    if "is_member" in context.frame.columns:
+        labels_current_members = set(
+            context.frame.loc[pd.to_numeric(context.frame["is_member"], errors="coerce").fillna(0).astype(int) == 1, "ticker"]
+            .astype(str)
+        )
+    if "was_member" in context.frame.columns:
+        labels_prev_members = set(
+            context.frame.loc[pd.to_numeric(context.frame["was_member"], errors="coerce").fillna(0).astype(int) == 1, "ticker"]
+            .astype(str)
+        )
+
+    current_members = labels_current_members or get_actual_members(model_package, selected_period)
+    prev_members = labels_prev_members or get_prev_members(model_package, selected_period)
     comparison = compare_with_actual(prediction_result, current_members, prev_members) if current_members else None
 
     scored = prediction_result["scored"]
@@ -2058,8 +2417,12 @@ def main() -> None:
         except Exception:
             actual_top200 = pd.DataFrame()
     basis_date = context.period_end.strftime("%Y-%m-%d") if context.period_end is not None else "N/A"
-    csv_bytes = make_csv(prediction_result)
+    _, sidebar_live_basis = fetch_naver_market_sum_snapshot()
+    realtime_basis_text = sidebar_live_basis or "확인 불가"
+    future_basis_text = get_future_prediction_basis_text(config)
+    csv_bytes = make_csv(prediction_result, bundle=bundle, period=selected_period)
     comparison_text = f"{comparison['top200_accuracy']:.1%}" if comparison else "\uBE44\uAD50 \uBD88\uAC00"
+    actual_change_result = build_actual_change_result(bundle, context, selected_period, prediction_result)
 
     with left_col:
         st.markdown(
@@ -2083,23 +2446,118 @@ def main() -> None:
             """,
             unsafe_allow_html=True,
         )
-
-    with center_col:
         st.markdown(
             f"""
-            <div class="hero-card topbar">
-                <div class="title-wrap">
-                    <h2>KOSPI 200 \uD3B8\uC785\u00B7\uD3B8\uCD9C \uC608\uCE21</h2>
-                    <p>\uD655\uC815\uB41C \uD654\uBA74 \uC694\uC18C\uB97C \uAE30\uC900\uC73C\uB85C \uAC00\uC7A5 \uAC00\uAE4C\uC6B4 \uBBF8\uB798 \uBC18\uAE30\uB97C \uC608\uCE21\uD569\uB2C8\uB2E4. \uC885\uBAA9 \uC0C1\uC138\uB294 \uC544\uB798 \uBC84\uD2BC\uC73C\uB85C \uD655\uC778\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.</p>
+            <div class="panel-card" style="margin-top:16px;">
+                <div class="section-title">데이터 정보</div>
+                <div class="section-sub">출처 및 기준일 안내</div>
+                <div class="analysis-item">
+                    <strong>반기 기준 종료일</strong>
+                    <p>선택 반기: {selected_period}<br>{basis_date}</p>
                 </div>
-                <div class="toolbar">
-                    <span class="pill">\uAE30\uC900\uC77C {basis_date}</span>
-                    <span class="pill">\uBAA8\uB378 \uBC84\uC804 {prediction_result['summary']['model_version']}</span>
+                <div class="analysis-item">
+                    <strong>실시간 시세 업데이트 시각</strong>
+                    <p>{realtime_basis_text}</p>
+                </div>
+                <div class="analysis-item">
+                    <strong>미래 예측 데이터 기준일</strong>
+                    <p>{future_basis_text}</p>
+                </div>
+                <div class="analysis-item">
+                    <strong>데이터 출처</strong>
+                    <p>과거 반기: SQL historical labels/predictions<br>미래 반기: Yahoo Finance, 네이버 증권, OpenDART<br>우측 실시간 패널: 네이버 증권, Yahoo Finance</p>
+                </div>
+                <div class="analysis-item" style="margin-bottom:0;">
+                    <strong>비고</strong>
+                    <p>미래 반기 예측은 최신 수집 데이터 기준으로 계산되며, 우측 패널 시세는 준실시간으로 갱신됩니다.</p>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+    with center_col:
+        st.markdown(
+            f"""
+            <div class="hero-card topbar">
+                  <div class="title-wrap">
+                      <h2>KOSPI 200 \uD3B8\uC785\u00B7\uD3B8\uCD9C \uC608\uCE21</h2>
+                      <p>\uD655\uC815\uB41C \uD654\uBA74 \uC694\uC18C\uB97C \uAE30\uC900\uC73C\uB85C \uAC00\uC7A5 \uAC00\uAE4C\uC6B4 \uBBF8\uB798 \uBC18\uAE30\uB97C \uC608\uCE21\uD569\uB2C8\uB2E4. \uC885\uBAA9 \uC0C1\uC138\uB294 \uC544\uB798 \uBC84\uD2BC\uC73C\uB85C \uD655\uC778\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.</p>
+                  </div>
+                  <div class="toolbar">
+                      <span class="pill">\uBAA8\uB378 \uBC84\uC804 {prediction_result['summary']['model_version']}</span>
+                  </div>
+              </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        current_view_tab, actual_compare_tab = st.tabs(["현재 화면 유지", "실제 결과 비교"])
+
+        with current_view_tab:
+            st.caption("아래에는 기존 예측 결과와 CSV 다운로드가 그대로 표시됩니다.")
+
+        with actual_compare_tab:
+            if actual_change_result is None:
+                st.info("\uD574\uB2F9 \uBC18\uAE30\uC5D0\uB294 \uC2E4\uC81C \uD3B8\uC785/\uD3B8\uCD9C \uB370\uC774\uD130\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4.")
+            else:
+                actual_in = actual_change_result["actual_in"]
+                actual_out = actual_change_result["actual_out"]
+                actual_in_set = actual_change_result["actual_in_set"]
+                actual_out_set = actual_change_result["actual_out_set"]
+                predicted_in_set = set(strong_in["ticker"].astype(str))
+                predicted_out_set = set(strong_out["ticker"].astype(str))
+
+                metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4, gap="small")
+                with metric_col1:
+                    render_metric_card("\uC2E4\uC81C \uD3B8\uC785", f"{len(actual_in):,}\uAC1C", "\uD574\uB2F9 \uBC18\uAE30 \uAE30\uC900")
+                with metric_col2:
+                    render_metric_card("\uC2E4\uC81C \uD3B8\uCD9C", f"{len(actual_out):,}\uAC1C", "\uD574\uB2F9 \uBC18\uAE30 \uAE30\uC900")
+                with metric_col3:
+                    render_metric_card("\uD3B8\uC785 \uC77C\uCE58", f"{len(predicted_in_set & actual_in_set)}\uAC1C", "\uC608\uCE21 vs \uC2E4\uC81C")
+                with metric_col4:
+                    render_metric_card("\uD3B8\uCD9C \uC77C\uCE58", f"{len(predicted_out_set & actual_out_set)}\uAC1C", "\uC608\uCE21 vs \uC2E4\uC81C")
+
+                actual_in_col, actual_out_col = st.columns(2, gap="large")
+                with actual_in_col:
+                    st.markdown(
+                        """
+                        <div class="section-card">
+                            <div class="panel-head">
+                                <div>
+                                    <h3 style="margin:0; font-size:18px; letter-spacing:-0.02em;">실제 편입 종목</h3>
+                                    <p style="margin:5px 0 0; font-size:12px; color:#89a0be;">해당 반기에 실제로 새롭게 편입된 종목</p>
+                                </div>
+                                <span class="tag green">실제 결과</span>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    if actual_in.empty:
+                        st.info("\uD574\uB2F9 \uBC18\uAE30 \uAE30\uC900 \uC2E4\uC81C \uD3B8\uC785 \uC885\uBAA9\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.")
+                    else:
+                        render_actual_stock_section(actual_in, "in")
+
+                with actual_out_col:
+                    st.markdown(
+                        """
+                        <div class="section-card">
+                            <div class="panel-head">
+                                <div>
+                                    <h3 style="margin:0; font-size:18px; letter-spacing:-0.02em;">실제 편출 종목</h3>
+                                    <p style="margin:5px 0 0; font-size:12px; color:#89a0be;">해당 반기에 실제로 편출된 종목</p>
+                                </div>
+                                <span class="tag red">실제 결과</span>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    if actual_out.empty:
+                        st.info("\uD574\uB2F9 \uBC18\uAE30 \uAE30\uC900 \uC2E4\uC81C \uD3B8\uCD9C \uC885\uBAA9\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.")
+                    else:
+                        render_actual_stock_section(actual_out, "out")
 
         st.markdown('<div class="csv-btn">', unsafe_allow_html=True)
         st.download_button(
@@ -2159,8 +2617,8 @@ def main() -> None:
                 <div class="section-card">
                     <div class="panel-head">
                         <div>
-                            <h3 style="margin:0; font-size:18px; letter-spacing:-0.02em;">KOSPI200 섹터 비율</h3>
-                            <p style="margin:5px 0 0; font-size:12px; color:#89a0be;">예측 TOP200 기준 요약</p>
+                            <h3 style="margin:0; font-size:18px; letter-spacing:-0.02em;">예측 KOSPI200 섹터 비율</h3>
+                            <p style="margin:5px 0 0; font-size:12px; color:#89a0be;">예측 TOP200 기준 분포</p>
                         </div>
                         <span class="tag blue">구성 현황</span>
                     </div>
@@ -2213,87 +2671,9 @@ def main() -> None:
                 )
                 st.plotly_chart(actual_fig, use_container_width=True)
 
+
     with right_col:
-        index_value = realtime_index["value"] if realtime_index else None
-        index_change = realtime_index["change"] if realtime_index else None
-        index_change_rate = realtime_index["change_rate"] if realtime_index else None
-        index_basis = realtime_index["date"] if realtime_index else (
-            realtime_market_date or (str(latest_date) if latest_date is not None else "N/A")
-        )
-        value_text = f"{index_value:,.2f}" if index_value is not None and pd.notna(index_value) else "N/A"
-        change_text = (
-            f"{index_change:+,.2f} ({index_change_rate:+.2f}%)"
-            if index_change is not None and pd.notna(index_change) and index_change_rate is not None and pd.notna(index_change_rate)
-            else f"\uAE30\uC900\uC77C {index_basis}"
-        )
-
-        st.markdown(
-            f"""
-            <div class="aside-card index-card">
-                <div class="side-stat-title">\uC2E4\uC2DC\uAC04 \uCF54\uC2A4\uD53C \uC9C0\uC218</div>
-                <div class="side-stat-value">{value_text}</div>
-                <div class="side-stat-change">{change_text}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if not market_trend.empty:
-            market_trend["date"] = pd.to_datetime(market_trend["date"], errors="coerce")
-            trend_fig = px.area(market_trend, x="date", y="value")
-            trend_fig.update_traces(line_color="#43d36f", fillcolor="rgba(67,211,111,0.14)")
-            trend_fig.update_layout(
-                margin=dict(l=0, r=0, t=0, b=0),
-                height=220,
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#dbe7f8",
-                xaxis_title=None,
-                yaxis_title=None,
-            )
-            trend_fig.update_xaxes(showgrid=False)
-            trend_fig.update_yaxes(showgrid=False, showticklabels=False)
-            st.plotly_chart(trend_fig, use_container_width=True)
-
-        st.markdown(
-            """
-            <div class="aside-card watch-card">
-                <div class="panel-head">
-                    <div>
-                        <div class="section-title">\uC2DC\uCD1D \uC21C\uC704 200</div>
-                        <div class="section-sub">\uCF54\uC2A4\uD53C \uD3EC\uD568 \uC885\uBAA9 \uC21C\uC704 \u00B7 \uC2DC\uAC00\uCD1D\uC561 \uAE30\uC900 \uC0C1\uC704 \uC885\uBAA9</div>
-                    </div>
-                    <span class="tag blue">\uC2E4\uC2DC\uAC04</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if latest_market_top.empty:
-            st.info("\uC2E4\uC2DC\uAC04 \uC2DC\uC7A5 \uB370\uC774\uD130\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.")
-        else:
-            with st.container(height=920):
-                for index, (_, row) in enumerate(latest_market_top.iterrows(), start=1):
-                    change_rate = row.get("change_rate")
-                    rate_text = f"{float(change_rate):+.2f}%" if pd.notna(change_rate) else "-"
-                    delta_color = "#48da7b" if pd.notna(change_rate) and float(change_rate) >= 0 else "#ff6d78"
-                    price_text = f"{float(row.get('close')):,.0f}\uC6D0" if pd.notna(row.get("close")) else "\uAC00\uACA9 \uC5C6\uC74C"
-                    company = str(row.get("company", "") or "")
-                    ticker = str(row.get("ticker", "") or "")
-                    st.markdown(
-                        f"""
-                        <div class="rank-row">
-                            <div class="rank-num">{index}</div>
-                            <div>
-                                <div>{company}</div>
-                                <div class="rank-value">{ticker} \u00B7 {price_text}</div>
-                            </div>
-                            <div class="rank-delta" style="color:{delta_color};">{rate_text}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+        render_live_sidebar(config, latest_date)
 
     detail_ticker = st.session_state.get("detail_ticker")
     if detail_ticker:
