@@ -72,9 +72,9 @@ def validate_email(email: str) -> bool:
 def save_subscriber_email(email: str) -> tuple[bool, str]:
     normalized_email = email.strip().lower()
     if not normalized_email:
-        return False, "?대찓?쇱쓣 ?낅젰??二쇱꽭??"
+        return False, "이메일을 입력해 주세요."
     if not validate_email(normalized_email):
-        return False, "?щ컮瑜??대찓???뺤떇???꾨떃?덈떎."
+        return False, "올바른 이메일 형식이 아닙니다."
 
     csv_path = get_subscriber_csv_path()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,14 +85,14 @@ def save_subscriber_email(email: str) -> tuple[bool, str]:
         existing = pd.DataFrame(columns=["email", "subscribed_at"])
 
     if "email" in existing.columns and normalized_email in existing["email"].astype(str).str.lower().tolist():
-        return True, "?대? 援щ룆 ?좎껌???대찓?쇱엯?덈떎."
+        return True, "이미 구독 요청된 이메일입니다."
 
     new_row = pd.DataFrame(
         [{"email": normalized_email, "subscribed_at": pd.Timestamp.now(tz="Asia/Seoul").isoformat()}]
     )
     updated = pd.concat([existing, new_row], ignore_index=True)
     updated.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    return True, f"援щ룆 ?대찓?쇱씠 ??λ릺?덉뒿?덈떎. ????뚯씪: {csv_path.name}"
+    return True, f"구독 이메일이 저장되었습니다. 저장 파일: {csv_path.name}"
 
 
 def to_number_series(series: pd.Series) -> pd.Series:
@@ -114,7 +114,7 @@ def fetch_krx_json(url: str, api_key: str, bas_dd: str) -> dict[str, Any] | None
         return None
 
 
-@st.cache_data(show_spinner=False, ttl=30)
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_latest_kospi_market_snapshot(api_key: str | None) -> tuple[pd.DataFrame, str | None]:
     if not api_key:
         return pd.DataFrame(), None
@@ -153,7 +153,7 @@ def fetch_latest_kospi_market_snapshot(api_key: str | None) -> tuple[pd.DataFram
     return pd.DataFrame(), None
 
 
-@st.cache_data(show_spinner=False, ttl=30)
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_latest_kospi_index(api_key: str | None) -> tuple[dict[str, Any] | None, pd.DataFrame]:
     if not api_key:
         return None, pd.DataFrame()
@@ -212,7 +212,54 @@ def fetch_latest_kospi_index(api_key: str | None) -> tuple[dict[str, Any] | None
     return latest, history
 
 
-@st.cache_data(show_spinner=False, ttl=30)
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_naver_kospi_index() -> tuple[dict[str, Any] | None, str | None]:
+    url = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        html_text = response.text
+        now_match = re.search(r'<em id="now_value">([^<]+)</em>', html_text)
+        change_match = re.search(
+            r'<span class="fluc" id="change_value_and_rate"><span>([^<]+)</span>\s*([+-]?[0-9.,]+)%<span class="blind">([^<]*)</span></span>',
+            html_text,
+        )
+        if not now_match:
+            return None, None
+        value = pd.to_numeric(str(now_match.group(1)).replace(",", ""), errors="coerce")
+        change_value = None
+        change_rate = None
+        if change_match:
+            change_value = pd.to_numeric(str(change_match.group(1)).replace(",", ""), errors="coerce")
+            change_rate = pd.to_numeric(str(change_match.group(2)).replace(",", ""), errors="coerce")
+            direction = (change_match.group(3) or "").strip()
+            if direction == "하락":
+                if change_value is not None and pd.notna(change_value):
+                    change_value = -abs(float(change_value))
+                if change_rate is not None and pd.notna(change_rate):
+                    change_rate = -abs(float(change_rate))
+            elif direction == "상승":
+                if change_value is not None and pd.notna(change_value):
+                    change_value = abs(float(change_value))
+                if change_rate is not None and pd.notna(change_rate):
+                    change_rate = abs(float(change_rate))
+        latest = {
+            "date": pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M"),
+            "name": "KOSPI",
+            "value": value,
+            "change": change_value,
+            "change_rate": change_rate,
+        }
+        return latest, latest["date"]
+    except Exception:
+        return None, None
+
+
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_yahoo_kospi_index() -> tuple[dict[str, Any] | None, pd.DataFrame]:
     url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11"
     try:
@@ -309,7 +356,7 @@ def _flatten_columns(columns: Any) -> list[str]:
     return flattened
 
 
-@st.cache_data(show_spinner=False, ttl=120)
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_naver_market_sum_snapshot() -> tuple[pd.DataFrame, str | None]:
     page_frames: list[pd.DataFrame] = []
     fetched_at = pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M")
@@ -406,7 +453,7 @@ def get_future_prediction_basis_text(config: AppConfig) -> str:
     return "확인 불가"
 
 
-@st.cache_data(show_spinner=False, ttl=180)
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_live_kospi_market_snapshot(auto_output_dir: str) -> tuple[pd.DataFrame, str | None]:
     auto_dir = Path(auto_output_dir)
     meta_path = auto_dir / "naver_stock_meta_weekly.csv"
@@ -1639,7 +1686,7 @@ def render_price_section(bundle: DataBundle, selected_row: pd.Series) -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-@st.fragment(run_every="180s")
+@st.fragment(run_every="300s")
 def render_live_sidebar(config: AppConfig, latest_date: Any) -> None:
     live_quote_df, live_quote_basis = fetch_naver_market_sum_snapshot()
     if not live_quote_df.empty:
@@ -1651,13 +1698,18 @@ def render_live_sidebar(config: AppConfig, latest_date: Any) -> None:
         realtime_market, realtime_market_date = fetch_latest_kospi_market_snapshot(config.krxdata_api_key)
         market_source = "저장 스냅샷"
     latest_market_top = realtime_market.head(200).copy() if not realtime_market.empty else pd.DataFrame()
-    realtime_index, market_trend = fetch_yahoo_kospi_index()
+    realtime_index, realtime_index_basis = fetch_naver_kospi_index()
+    yahoo_index, market_trend = fetch_yahoo_kospi_index()
+    if realtime_index is None:
+        realtime_index = yahoo_index
 
     index_value = realtime_index["value"] if realtime_index else None
     index_change = realtime_index["change"] if realtime_index else None
     index_change_rate = realtime_index["change_rate"] if realtime_index else None
-    index_basis = realtime_index["date"] if realtime_index else (
+    index_basis = realtime_index_basis if realtime_index_basis else (
+        realtime_index["date"] if realtime_index else (
         realtime_market_date or (str(latest_date) if latest_date is not None else "N/A")
+        )
     )
     market_update_text = (
         f"업데이트 {realtime_market_date} · {market_source}"
